@@ -70,10 +70,14 @@ async function getThisWeekCalendarEvents() {
   console.log(`📅 查询本周日历: ${monday.toLocaleDateString()} 至 ${sunday.toLocaleDateString()}`);
 
   try {
-    // 获取日历列表
-    const calendarsRes = await axios.get('https://open.feishu.cn/open-apis/calendar/v4/calendars', {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+// 获取日历列表（指定用户ID）
+const calendarsRes = await axios.get('https://open.feishu.cn/open-apis/calendar/v4/calendars', {
+  headers: { 'Authorization': `Bearer ${token}` },
+  params: {
+    user_id: 'ou_15f7915f2bf06eb1d9e7c4fd1119d270',
+    user_id_type: 'user_id'
+  }
+});
 
     if (calendarsRes.data.code !== 0) {
       throw new Error(calendarsRes.data.msg);
@@ -87,11 +91,17 @@ async function getThisWeekCalendarEvents() {
     for (const calendar of calendars) {
       try {
         const eventsRes = await axios.get(
-          `https://open.feishu.cn/open-apis/calendar/v4/calendars/${calendar.calendar_id}/events?` +
-          `time_min=${encodeURIComponent(timeMin)}&` +
-          `time_max=${encodeURIComponent(timeMax)}`,
-          { headers: { 'Authorization': `Bearer ${token}` } }
-        );
+  `https://open.feishu.cn/open-apis/calendar/v4/calendars/${calendar.calendar_id}/events`,
+  { 
+    headers: { 'Authorization': `Bearer ${token}` },
+    params: {
+      time_min: timeMin,
+      time_max: timeMax,
+      user_id: 'ou_15f7915f2bf06eb1d9e7c4fd1119d270',
+      user_id_type: 'user_id'
+    }
+  }
+);
 
         if (eventsRes.data.code === 0) {
           const events = eventsRes.data.data?.items || [];
