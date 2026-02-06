@@ -1,29 +1,27 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const path = require('path');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static('.'));
 
-// ========== 配置区域（之后需要修改） ==========
+// ========== 配置区域 ==========
 const CONFIG = {
-  APP_ID: 'cli_a8b5120172a2101c',
-  APP_SECRET: 'odDmS9JktPW1QxF4k0JXycZ0C7gdNoO0',
-  // 表格字段配置
-  NAME_FIELD: '姓名',
-  STATUS_FIELD: '状态',
-  STATUS_INITIAL: '初试',
-  STATUS_REJECTED: '简历未通过'
+  APP_ID: process.env.APP_ID || '你的_App_ID',
+  APP_SECRET: process.env.APP_SECRET || '你的_App_Secret',
+  // 飞书表格配置（用于更新状态）
+  BASE_ID: process.env.BASE_ID || '',
+  TABLE_ID: process.env.TABLE_ID || '',
+  // 个人访问令牌（用于更新表格）
+  PERSONAL_TOKEN: process.env.PERSONAL_TOKEN || ''
 };
 
 // 内存存储访问令牌
 let accessToken = null;
 let tokenExpireTime = 0;
 
-// ========== 飞书 API 方法 ==========
+// ========== 飞书日历 API 方法 ==========
 
 // 获取 tenant_access_token
 async function getAccessToken() {
@@ -51,7 +49,7 @@ async function getAccessToken() {
   }
 }
 
-// 获取本周日历事件（简化版，先获取当前用户的日历列表）
+// 获取本周日历事件
 async function getThisWeekCalendarEvents() {
   const token = await getAccessToken();
   
@@ -72,7 +70,7 @@ async function getThisWeekCalendarEvents() {
   console.log(`📅 查询本周日历: ${monday.toLocaleDateString()} 至 ${sunday.toLocaleDateString()}`);
 
   try {
-    // 先获取日历列表
+    // 获取日历列表
     const calendarsRes = await axios.get('https://open.feishu.cn/open-apis/calendar/v4/calendars', {
       headers: { 'Authorization': `Bearer ${token}` }
     });
@@ -117,16 +115,15 @@ function extractNamesFromEvents(events) {
   const names = new Set();
 
   events.forEach(event => {
-    // 从标题提取
     const title = event.summary || '';
     
-    // 匹配模式：面试-张三、张三-面试、初试-张三 等
+    // 匹配模式
     const patterns = [
       /面试[\-—:：]?\s*([^\-—:：\s]+)/i,
       /([^\-—:：\s]+)[\-—:：]?\s*面试/i,
       /初试[\-—:：]?\s*([^\-—:：\s]+)/i,
       /([^\-—:：\s]+)[\-—:：]?\s*初试/i,
-      /面[\-—:：]?\s*([^\-—:：\s]{2,4})/i,  // 面-张三 或 面：张三
+      /面[\-—:：]?\s*([^\-—:：\s]{2,4})/i,
     ];
 
     for (const pattern of patterns) {
@@ -162,7 +159,77 @@ function isNameMatched(name, calendarNames) {
   });
 }
 
-// ========== 插件 API 接口 ==========
+// ========== 更新飞书表格 ==========
+
+// 使用多维表格 API 更新记录
+async function updateRecordStatus(recordId, status) {
+  try {
+    // 使用 App Access Token 或 User Access Token
+    const token = await getAccessToken();
+    
+    // 调用飞书多维表格 API 更新记录
+    const res = await axios.put(
+      `https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.BASE_ID}/tables/${CONFIG.TABLE_ID}/records/${recordId}`,
+      {
+        fields: {
+          "状态": status
+        }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (res.data.code !== 0) {
+      throw new Error(res.data.msg);
+    }
+
+    console.log(`✅ 成功更新记录 ${recordId} 状态为: ${status}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ 更新记录失败:`, error.message);
+    // 如果失败，尝试使用个人访问令牌
+    if (CONFIG.PERSONAL_TOKEN) {
+      return await updateRecordWithPAT(recordId, status);
+    }
+    throw error;
+  }
+}
+
+// 使用个人访问令牌更新（备用方案）
+async function updateRecordWithPAT(recordId, status) {
+  try {
+    const res = await axios.put(
+      `https://open.feishu.cn/open-apis/bitable/v1/apps/${CONFIG.BASE_ID}/tables/${CONFIG.TABLE_ID}/records/${recordId}`,
+      {
+        fields: {
+          "状态": status
+        }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${CONFIG.PERSONAL_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (res.data.code !== 0) {
+      throw new Error(res.data.msg);
+    }
+
+    console.log(`✅ 使用 PAT 成功更新记录 ${recordId}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ PAT 更新也失败:`, error.message);
+    throw error;
+  }
+}
+
+// ========== API 接口 ==========
 
 // 健康检查
 app.get('/', (req, res) => {
@@ -173,7 +240,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// 检查单个姓名是否在本周日历中
+// 检查单个姓名
 app.post('/check-name', async (req, res) => {
   try {
     const { name } = req.body;
@@ -189,7 +256,7 @@ app.post('/check-name', async (req, res) => {
     res.json({
       name,
       matched,
-      status: matched ? CONFIG.STATUS_INITIAL : CONFIG.STATUS_REJECTED,
+      status: matched ? '初试' : '简历未通过',
       calendarNamesFound: calendarNames
     });
   } catch (error) {
@@ -198,28 +265,64 @@ app.post('/check-name', async (req, res) => {
   }
 });
 
-// 获取配置信息（供前端使用）
+// Webhook 接口（供飞书自动化调用）
+app.post('/webhook', async (req, res) => {
+  try {
+    const { recordId, name, tableId } = req.body;
+    
+    if (!recordId || !name) {
+      return res.status(400).json({ error: '缺少必要参数' });
+    }
+
+    console.log(`🎯 Webhook 收到请求: recordId=${recordId}, name=${name}`);
+
+    // 检查姓名是否在日历中
+    const events = await getThisWeekCalendarEvents();
+    const calendarNames = extractNamesFromEvents(events);
+    const matched = isNameMatched(name, calendarNames);
+    const newStatus = matched ? '初试' : '简历未通过';
+
+    console.log(`📊 判断结果: ${name} -> ${newStatus}`);
+
+    // 更新表格状态
+    let updateResult = { success: false, message: '未配置表格更新' };
+    
+    if (CONFIG.BASE_ID && CONFIG.TABLE_ID) {
+      try {
+        await updateRecordStatus(recordId, newStatus);
+        updateResult = { success: true, message: '状态已更新' };
+      } catch (e) {
+        updateResult = { success: false, message: e.message };
+      }
+    }
+
+    res.json({
+      success: true,
+      name,
+      matched,
+      status: newStatus,
+      updateResult
+    });
+
+  } catch (error) {
+    console.error('❌ Webhook 处理失败:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 配置接口
 app.get('/config', (req, res) => {
   res.json({
-    nameField: CONFIG.NAME_FIELD,
-    statusField: CONFIG.STATUS_FIELD,
-    statusInitial: CONFIG.STATUS_INITIAL,
-    statusRejected: CONFIG.STATUS_REJECTED
+    appIdConfigured: !!CONFIG.APP_ID,
+    baseIdConfigured: !!CONFIG.BASE_ID,
+    tableIdConfigured: !!CONFIG.TABLE_ID
   });
 });
 
-// 更新配置
-app.post('/config', (req, res) => {
-  const { appId, appSecret } = req.body;
-  if (appId) CONFIG.APP_ID = appId;
-  if (appSecret) CONFIG.APP_SECRET = appSecret;
-  res.json({ message: '配置已更新' });
-});
-
 // ========== 启动服务 ==========
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 插件服务器启动: http://localhost:${PORT}`);
   console.log(`📋 健康检查: http://localhost:${PORT}/`);
-  console.log(`⚙️  配置接口: http://localhost:${PORT}/config`);
+  console.log(`🔔 Webhook: http://localhost:${PORT}/webhook`);
 });
